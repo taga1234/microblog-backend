@@ -1,0 +1,125 @@
+services:
+  booklore:
+    image: ghcr.io/adityachandelgit/booklore-app:latest
+    container_name: booklore
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Almaty
+      - DATABASE_URL=jdbc:mariadb://mariadb:3306/booklore
+      - DATABASE_USERNAME=booklore
+      - DATABASE_PASSWORD=secure_booklore_password_2025
+      - SWAGGER_ENABLED=true  # Включаем для разработки/тестирования
+      
+      # Email настройки для отправки книг
+      - SMTP_HOST=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_USERNAME=tagirzhakupov1213@gmail.com  # Замените на ваш email
+      - SMTP_PASSWORD=tagirzhakupov1213     # App Password для Gmail
+      - SMTP_FROM=tagirzhakupov1213@gmail.com     # От кого отправлять
+      - SMTP_TLS=true
+      
+      # OIDC настройки (опционально)
+      - OIDC_ENABLED=false
+      - OIDC_CLIENT_ID=booklore
+      - OIDC_CLIENT_SECRET=your-oidc-secret
+      - OIDC_ISSUER_URL=https://your-auth-provider.com
+      - OIDC_REDIRECT_URI=http://localhost:6060/auth/callback
+      
+      # Remote Auth настройки (для reverse proxy)
+      - REMOTE_AUTH_ENABLED=false
+      - REMOTE_AUTH_CREATE_NEW_USERS=true
+      - REMOTE_AUTH_HEADER_NAME=Remote-Name
+      - REMOTE_AUTH_HEADER_USER=Remote-User
+      - REMOTE_AUTH_HEADER_EMAIL=Remote-Email
+      - REMOTE_AUTH_HEADER_GROUPS=Remote-Groups
+      - REMOTE_AUTH_ADMIN_GROUP=admin
+      
+      # Дополнительные настройки
+      - JAVA_OPTS=-Xmx2g -Xms512m  # Настройка памяти JVM
+      - LOG_LEVEL=INFO
+      
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    ports:
+      - "6060:6060"
+    volumes:
+      - ./booklore-data:/app/data
+      - ./books:/books
+      - ./logs:/app/logs  # Логи приложения
+    restart: unless-stopped
+    networks:
+      - booklore-network
+
+  mariadb:
+    image: lscr.io/linuxserver/mariadb:11.4.5
+    container_name: mariadb
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Almaty
+      - MYSQL_ROOT_PASSWORD=super_secure_root_password_2025
+      - MYSQL_DATABASE=booklore
+      - MYSQL_USER=booklore
+      - MYSQL_PASSWORD=secure_booklore_password_2025
+    volumes:
+      - ./mariadb-config:/config
+      - ./mariadb-backup:/backup  # Папка для бэкапов
+    restart: unless-stopped
+    networks:
+      - booklore-network
+    healthcheck:
+      test: ["CMD", "mariadb-admin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Nginx для reverse proxy (опционально)
+  nginx:
+    image: nginx:alpine
+    container_name: booklore-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro  # SSL сертификаты
+    depends_on:
+      - booklore
+    restart: unless-stopped
+    networks:
+      - booklore-network
+    profiles:
+      - nginx  # Запускается только с профилем nginx
+
+  # Автоматические бэкапы базы данных
+  backup:
+    image: lscr.io/linuxserver/mariadb:11.4.5
+    container_name: booklore-backup
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Almaty
+    volumes:
+      - ./mariadb-backup:/backup
+      - ./backup-scripts:/scripts:ro
+    depends_on:
+      - mariadb
+    restart: "no"
+    networks:
+      - booklore-network
+    profiles:
+      - backup  # Запускается только с профилем backup
+    command: >
+      sh -c "
+        while true; do
+          sleep 86400
+          mariadb-dump -h mariadb -u booklore -psecure_booklore_password_2025 booklore > /backup/booklore_backup_$(date +%Y%m%d_%H%M%S).sql
+          find /backup -name '*.sql' -mtime +7 -delete
+        done
+      "
+
+networks:
+  booklore-network:
+    driver: bridge
